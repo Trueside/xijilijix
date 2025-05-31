@@ -4,3 +4,8 @@
 g++ main.cpp -o make_exe
 
 ### RUN A NEW .exe file
+
+
+### GIT COMMAND
+git commit -am "comment"
+git push
