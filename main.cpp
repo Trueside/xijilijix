@@ -1,101 +1,106 @@
-#include <fstream>
-#include <vector>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 
-constexpr uint16_t FILE_ALIGNMENT = 0x200;
-constexpr uint16_t SECTION_ALIGNMENT = 0x1000;
-constexpr uint64_t IMAGE_BASE = 0x140000000;
-
-// Ручной код: GetStdHandle -> WriteConsoleA
-// Этот кусок кода использует системные вызовы Windows API
-const uint8_t code[] = {
-    0x48, 0x83, 0xEC, 0x28,                   // sub rsp, 0x28 (align stack)
-    0x48, 0xC7, 0xC1, 0xFF, 0xFF, 0xFF, 0xFF, // mov rcx, -1 (STD_OUTPUT_HANDLE)
-    0x48, 0xB8,                               // mov rax, address of GetStdHandle
-    // 8 байт адреса GetStdHandle (заполним позже)
-    0,0,0,0,0,0,0,0,
-    0xFF, 0xD0,                               // call rax
-
-    0x48, 0x89, 0xC1,                         // mov rcx, rax (handle)
-    0x48, 0x8D, 0x15,                         // lea rdx, [rip+offset]
-    // 4 байта смещения до строки
-    0,0,0,0,
-    0x48, 0xC7, 0xC2, 0x0D, 0x00, 0x00, 0x00, // mov rdx, length
-    0x48, 0x31, 0xC0,                         // xor rax, rax (lpNumberOfBytesWritten)
-    0x48, 0xB8,                               // mov rax, address of WriteConsoleA
-    // 8 байт адреса WriteConsoleA (заполним позже)
-    0,0,0,0,0,0,0,0,
-    0xFF, 0xD0,                               // call rax
-
-    0x48, 0x83, 0xC4, 0x28,                   // add rsp, 0x28
-    0xC3                                      // ret
-};
-
-// Наша строка
-const char message[] = "Hello, World!\n";
-
-int align(int size, int alignment) {
-    return (size + alignment - 1) & ~(alignment - 1);
+constexpr uint32_t align_up(uint32_t value, uint32_t alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
 }
 
 int main() {
-    std::ofstream f("hello.exe", std::ios::binary);
+    const uint32_t file_alignment = 0x200;
+    const uint32_t section_alignment = 0x1000;
 
-    // DOS заголовок
-    uint8_t mz[0x40] = {};
-    mz[0] = 'M'; mz[1] = 'Z';
-    *reinterpret_cast<uint32_t*>(&mz[0x3C]) = 0x80; // e_lfanew
+    const uint32_t code_rva = align_up(0x400, section_alignment);
+    const uint32_t code_offset = align_up(0x400, file_alignment);
 
-    // NT-заголовок
-    uint8_t pe[0xF8] = {};
-    std::memcpy(pe, "PE\0\0", 4);
-    *reinterpret_cast<uint16_t*>(&pe[4]) = 0x8664; // machine x64
-    *reinterpret_cast<uint16_t*>(&pe[6]) = 2;      // NumberOfSections
-    *reinterpret_cast<uint16_t*>(&pe[20]) = 0xF0;  // SizeOfOptionalHeader
+    const uint32_t code_size = 1;
+    const uint32_t code_virtual_size = align_up(code_size, section_alignment);
+    const uint32_t code_raw_size = align_up(code_size, file_alignment);
 
-    // Optional Header
-    pe[24] = 0x20; pe[25] = 0x0B; // PE32+
-    *reinterpret_cast<uint64_t*>(&pe[24+24]) = IMAGE_BASE;
-    *reinterpret_cast<uint32_t*>(&pe[24+32]) = SECTION_ALIGNMENT;
-    *reinterpret_cast<uint32_t*>(&pe[24+36]) = FILE_ALIGNMENT;
-    *reinterpret_cast<uint16_t*>(&pe[24+40]) = 6; // OS version
-    *reinterpret_cast<uint16_t*>(&pe[24+42]) = 0;
-    *reinterpret_cast<uint16_t*>(&pe[24+44]) = 6; // Subsystem version
-    *reinterpret_cast<uint16_t*>(&pe[24+46]) = 0;
-    *reinterpret_cast<uint32_t*>(&pe[24+56]) = 0x400; // SizeOfHeaders
-    *reinterpret_cast<uint32_t*>(&pe[24+60]) = 0x2000; // SizeOfImage
-    *reinterpret_cast<uint32_t*>(&pe[24+64]) = 0x1000; // EntryPoint RVA
-    *reinterpret_cast<uint32_t*>(&pe[24+68]) = 0x1000; // BaseOfCode RVA
-    *reinterpret_cast<uint16_t*>(&pe[24+92]) = 3; // Subsystem (Windows CUI)
-    *reinterpret_cast<uint64_t*>(&pe[24+112]) = 0x100000; // SizeOfStackReserve
-    *reinterpret_cast<uint64_t*>(&pe[24+120]) = 0x1000;   // SizeOfStackCommit
-    *reinterpret_cast<uint64_t*>(&pe[24+128]) = 0x100000; // SizeOfHeapReserve
-    *reinterpret_cast<uint64_t*>(&pe[24+136]) = 0x1000;   // SizeOfHeapCommit
-    *reinterpret_cast<uint32_t*>(&pe[24+148]) = 1;        // NumberOfRvaAndSizes
+    const uint32_t image_size = code_rva + code_virtual_size;
+    const uint32_t headers_size = align_up(0x400, file_alignment); // assume headers take 0x400 bytes
 
-    // Section headers
-    uint8_t text_section[40] = {};
-    std::memcpy(text_section, ".text\0\0\0", 8);
-    *reinterpret_cast<uint32_t*>(&text_section[8]) = align(sizeof(code), SECTION_ALIGNMENT); // VirtualSize
-    *reinterpret_cast<uint32_t*>(&text_section[12]) = 0x1000; // RVA
-    *reinterpret_cast<uint32_t*>(&text_section[16]) = align(sizeof(code), FILE_ALIGNMENT); // RawSize
-    *reinterpret_cast<uint32_t*>(&text_section[20]) = 0x400;  // RawOffset
-    *reinterpret_cast<uint32_t*>(&text_section[36]) = 0x60000020; // characteristics (CODE | EXECUTE | READ)
+    uint32_t total_size = code_offset + code_raw_size;
+    char* exe = (char*)std::calloc(total_size, 1);
+    if (!exe) {
+        std::perror("Allocation failed");
+        return 1;
+    }
 
-    // Пишем DOS, NT, Section
-    f.write((char*)mz, sizeof(mz));
-    f.seekp(0x80);
-    f.write((char*)pe, sizeof(pe));
-    f.write((char*)text_section, sizeof(text_section));
+    // === DOS Header ===
+    exe[0x00] = 'M';
+    exe[0x01] = 'Z';
+    *(uint32_t*)(exe + 0x3C) = 0x80;  // PE header offset
 
-    // Выравнивание до 0x400
-    f.seekp(0x400);
-    // Пишем код
-    f.write((char*)code, sizeof(code));
-    // Можно добавить строку (если используем lea rdx, [rip+offset])
-    // и скорректировать offset.
+    // === PE Signature ===
+    char* pe = exe + 0x80;
+    pe[0] = 'P';
+    pe[1] = 'E';
+    pe[2] = 0;
+    pe[3] = 0;
 
-    f.close();
+    // === COFF Header ===
+    *(uint16_t*)(pe + 4) = 0x8664; // Machine: AMD64
+    *(uint16_t*)(pe + 6) = 1;      // Number of sections
+    *(uint32_t*)(pe + 8) = 0;      // TimeDateStamp
+    *(uint32_t*)(pe + 12) = 0;     // PointerToSymbolTable
+    *(uint32_t*)(pe + 16) = 0;     // NumberOfSymbols
+    *(uint16_t*)(pe + 20) = 0xF0;  // Size of optional header
+    *(uint16_t*)(pe + 22) = 0x0222; // Characteristics: executable, 64bit
+
+    // === Optional Header (PE32+) ===
+    char* opt = pe + 24;
+    *(uint16_t*)(opt + 0) = 0x20B;       // Magic = PE32+
+    *(uint8_t*)(opt + 2) = 0;            // Linker version
+    *(uint8_t*)(opt + 3) = 0;
+    *(uint32_t*)(opt + 4) = align_up(code_size, file_alignment); // SizeOfCode
+    *(uint32_t*)(opt + 8) = 0;           // SizeOfInitializedData
+    *(uint32_t*)(opt + 12) = 0;          // SizeOfUninitializedData
+    *(uint32_t*)(opt + 16) = code_rva;   // AddressOfEntryPoint
+    *(uint32_t*)(opt + 20) = code_rva;   // BaseOfCode
+    *(uint64_t*)(opt + 24) = 0x140000000; // ImageBase
+    *(uint32_t*)(opt + 32) = section_alignment;
+    *(uint32_t*)(opt + 36) = file_alignment;
+    *(uint16_t*)(opt + 40) = 6;           // OS Version
+    *(uint16_t*)(opt + 42) = 0;
+    *(uint16_t*)(opt + 44) = 0;           // Image version
+    *(uint16_t*)(opt + 46) = 0;
+    *(uint16_t*)(opt + 48) = 6;           // Subsystem version
+    *(uint16_t*)(opt + 50) = 0;
+    *(uint32_t*)(opt + 52) = 0;           // Win32VersionValue
+    *(uint32_t*)(opt + 56) = image_size;  // SizeOfImage
+    *(uint32_t*)(opt + 60) = headers_size; // SizeOfHeaders
+    *(uint32_t*)(opt + 64) = 0;           // Checksum
+    *(uint16_t*)(opt + 68) = 3;           // Subsystem (console)
+    *(uint16_t*)(opt + 70) = 0;           // DllCharacteristics
+    *(uint64_t*)(opt + 72) = 0x100000;    // SizeOfStackReserve
+    *(uint64_t*)(opt + 80) = 0x1000;      // SizeOfStackCommit
+    *(uint64_t*)(opt + 88) = 0x100000;    // SizeOfHeapReserve
+    *(uint64_t*)(opt + 96) = 0x1000;      // SizeOfHeapCommit
+    *(uint32_t*)(opt + 104) = 0;          // LoaderFlags
+    *(uint32_t*)(opt + 108) = 0x10;       // NumberOfRvaAndSizes
+
+    // === Section Header ===
+    char* section = opt + 0xF0;
+    std::memcpy(section + 0, ".text", 5);
+    *(uint32_t*)(section + 8) = code_virtual_size;
+    *(uint32_t*)(section + 12) = code_rva;
+    *(uint32_t*)(section + 16) = code_raw_size;
+    *(uint32_t*)(section + 20) = code_offset;
+    *(uint32_t*)(section + 24) = 0; // reloc
+    *(uint32_t*)(section + 28) = 0; // lineno
+    *(uint16_t*)(section + 32) = 0; // num reloc
+    *(uint16_t*)(section + 34) = 0; // num lineno
+    *(uint32_t*)(section + 36) = 0x60000020; // flags: code + exec + read
+
+    // === Code: RET ===
+    exe[code_offset] = (char)0xC3;
+
+    std::ofstream out("minimal.exe", std::ios::binary);
+    out.write(exe, total_size);
+    out.close();
+    std::free(exe);
     return 0;
 }

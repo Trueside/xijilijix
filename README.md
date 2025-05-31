@@ -13,6 +13,8 @@ cd /d "d:\path"
 
 
 ### GIT COMMANDS
+git commit -m "comment"
+### COMMIT ALL FILES
 git commit -am "comment"
 
 git push
