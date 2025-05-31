@@ -4,6 +4,9 @@
 g++ main.cpp -o make_exe
 ### AND RUN A NEW .exe file
 
+### REMOVE .exe files
+rm -rf *.exe
+
 ### DEBUG
 objdump -x file.exe
 
